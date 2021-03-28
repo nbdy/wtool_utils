@@ -3,6 +3,8 @@
 apt-get install -y libpcap-dev libssl-dev libboost-chrono-dev libboost-timer-dev cmake
 
 git submodule update --init
+cd msgpack-c
+git checkout cpp_master
 
 cd /tmp/
 git clone https://github.com/mfontanini/libtins
