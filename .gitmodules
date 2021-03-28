@@ -1,0 +1,10 @@
+[submodule "ohlog"]
+	path = ohlog
+	url = https://github.com/nbdy/ohlog
+[submodule "libsck"]
+	path = libsck
+	url = https://github.com/nbdy/libsck
+[submodule "msgpack-c"]
+	path = msgpack-c
+	branch = cpp_master
+	url = https://github.com/msgpack/msgpack-c
