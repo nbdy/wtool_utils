@@ -13,3 +13,6 @@ include_directories(ext)
 include_directories(libs)
 
 target_link_libraries(wtool_utils pthread tins)
+
+install(TARGETS wtool_utils
+        RUNTIME DESTINATION bin)
