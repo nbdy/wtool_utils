@@ -8,35 +8,32 @@
 #include <string>
 #include <mutex>
 #include <tins/tins.h>
-
-#include <msgpack.hpp>
 #include <sck.h>
 
+
+typedef char tMAC[18];
+typedef char tSSID[34];
+typedef std::vector<float> tRates;
+typedef char tData[256];
+
 // TODO(nbdy): check if we actually need msgpack, or if we can cast it to a char array and cast that back on the other side
-struct WiFiPacket {
-    std::string addr1;
-    std::string addr2;
-    std::string addr3;
-    std::string addr4;
-    std::string country;
-    std::string challengeText;
+struct WiFiFrame {
+    tMAC addr1 {};
+    tMAC addr2 {};
+    tMAC addr3 {};
+    tMAC addr4 {};
+    tSSID essid {};
     bool toDs = false;
     bool fromDs = false;
-    std::vector<float> rates;
-    std::vector<float> extendedRates;
-    std::pair<uint8_t, uint8_t> powerCapability;
-    std::vector<std::pair<uint8_t, uint8_t>> channels;
+    tRates rates;
     uint8_t type {};
-
-    MSGPACK_DEFINE(addr1, addr2, addr3, addr4, country, challengeText, toDs, fromDs, rates, extendedRates,
-                   powerCapability, channels);
 };
 
 class Sniffer;
 
 class PacketPipe: public nbdy::SocketContainer {
     std::mutex mtxQueue;
-    std::vector<std::string> queue;
+    std::vector<char*> queue;
 
     std::mutex mtxClientConnected;
     bool clientConnected = false;
@@ -65,9 +62,9 @@ public:
         mtxQueue.unlock();
     }
 
-    std::vector<std::string> getQueue() {
+    std::vector<char*> getQueue() {
         mtxQueue.lock();
-        std::vector<std::string> r(queue);
+        std::vector<char*> r(queue);
         queue.clear();
         mtxQueue.unlock();
         return r;
@@ -87,11 +84,14 @@ public:
                 ohlog::Logger::get()->i("PacketPipe", "New connection from %s:%i", host.c_str(), port);
                 auto pp = (PacketPipe*) ctx;
                 pp->setClientConnected(true);
-                while(pp->getDoRun()) {
+                while(pp->getDoRun() && pp->getClientConnected()) {
                     auto q = pp->getQueue();
                     if(!q.empty()) {
                         ohlog::Logger::get()->i("PacketPipe", "Sending %i packets", q.size());
-                        for(const auto& o : pp->getQueue()) PacketPipe::writeTo(fp, o);
+                        for(char* o : pp->getQueue()) {
+                            ohlog::Logger::get()->i("PacketPipe", "Sending: %s\n", o);
+                            PacketPipe::writeTo(fp, o, sizeof(WiFiFrame));
+                        }
                     }
                     usleep(50000); // 50 ms
                 }
@@ -106,6 +106,10 @@ public:
         packetPipe.stop();
     }
 
+    void join() {
+
+    }
+
     void run(const std::string& interface, bool rf_mon, bool promiscuous, const std::string& filter="") {
         cfg.set_promisc_mode(promiscuous);
         cfg.set_rfmon(rf_mon);
@@ -115,40 +119,35 @@ public:
         sniffer->sniff_loop(Tins::make_sniffer_handler(this, &Sniffer::callback));
     }
 
-    template<typename T> char* serialize(T data) {
-        msgpack::sbuffer sbuf;
-        msgpack::pack(sbuf, data);
-        return sbuf.data();
-    }
+    void checkManagementFrame(Tins::PDU& pdu) {
+        auto managementFrame = pdu.rfind_pdu<Tins::Dot11ManagementFrame>();
 
-    void checkBeacon(Tins::PDU& pdu) {
-        auto beacon = pdu.rfind_pdu<Tins::Dot11ManagementFrame>();
-        if(!beacon.from_ds() && !beacon.to_ds()) {
-            WiFiPacket wiFiPacket;
-            wiFiPacket.addr1 = beacon.addr1().to_string();
-            wiFiPacket.addr2 = beacon.addr2().to_string();
-            wiFiPacket.addr3 = beacon.addr3().to_string();
-            wiFiPacket.addr4 = beacon.addr4().to_string();
-            wiFiPacket.country = beacon.country().country;
-            wiFiPacket.challengeText = beacon.challenge_text();
-            wiFiPacket.toDs = beacon.to_ds();
-            wiFiPacket.fromDs = beacon.from_ds();
-            wiFiPacket.rates = beacon.supported_rates();
-            wiFiPacket.extendedRates = beacon.extended_supported_rates();
-            wiFiPacket.powerCapability = beacon.power_capability();
-            wiFiPacket.channels = beacon.supported_channels();
-            wiFiPacket.type = beacon.pdu_type();
-            log->d(LOG_TAG, "Enqueuing wifi packet\n\t%s\n\t%s\n\t%s\n\t%s\n\t%s",
-                   wiFiPacket.addr1.c_str(), wiFiPacket.addr2.c_str(),
-                   wiFiPacket.addr3.c_str(), wiFiPacket.addr4.c_str(),
-                   wiFiPacket.country.c_str());
-            packetPipe.enqueue(serialize(wiFiPacket));
+        auto* frame = new WiFiFrame;
+        memcpy(frame->addr1, managementFrame.addr1().to_string().c_str(), sizeof(tMAC));
+        memcpy(frame->addr2, managementFrame.addr2().to_string().c_str(), sizeof(tMAC));
+        memcpy(frame->addr3, managementFrame.addr3().to_string().c_str(), sizeof(tMAC));
+        memcpy(frame->addr4, managementFrame.addr4().to_string().c_str(), sizeof(tMAC));
+        try {
+            frame->toDs = managementFrame.to_ds();
+            frame->fromDs = managementFrame.from_ds();
+            frame->rates = managementFrame.supported_rates();
+            frame->type = managementFrame.pdu_type();
+        } catch (Tins::option_not_found &e) {}
+
+        if(!managementFrame.from_ds() && !managementFrame.to_ds()) {
+            auto beacon = pdu.rfind_pdu<Tins::Dot11Beacon>();
+            memcpy(frame->essid, beacon.ssid().c_str(), sizeof(tSSID));
         }
+
+        log->d(LOG_TAG, "Enqueuing wifi packet\n\t%s\n\t%s\n\t%s\n\t%s\n\tESSID: %s\n",
+               frame->addr1, frame->addr2, frame->addr3, frame->addr4, frame->essid);
+        packetPipe.enqueue((char*) frame);
+        delete frame;
     }
 
     bool callback(Tins::PDU& pdu) {
-        // if(!packetPipe.getClientConnected()) return true;
-        checkBeacon(pdu);
+        if(!packetPipe.getClientConnected()) return true;
+        checkManagementFrame(pdu);
         return true;
     }
 

@@ -1,10 +1,21 @@
 #include <string>
 #include <iostream>
+#include <csignal>
 
 #include <args.h>
 #include <ohlog.h>
 
 #include <Sniffer.h>
+
+Sniffer *sniffer = nullptr;
+
+void signal_handler(int) {
+    if(sniffer != nullptr) {
+        sniffer->stop();
+        sniffer->join();
+        delete sniffer;
+    }
+}
 
 int main(int argc, char** argv) {
     auto *log = ohlog::Logger::get();
@@ -15,9 +26,11 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    signal(SIGINT, signal_handler);
+
     args::ArgumentParser p("wtool_utils");
     args::HelpFlag help(p, "help", "This help menu", {'h', "help"});
-    args::ValueFlag<std::string> interface(p, "interface", "Which interface to use", {'i', "interface"}, "wlan0");
+    args::ValueFlag<std::string> interface(p, "interface", "Which interface to use", {'i', "interface"}, "wlx00c0caabaadc");
     args::ValueFlag<std::string> filter(p, "extra pcap filter", "Extra pcap filter for the sniffer", {"pf", "pcap-filter"}, "type mgt");
     try {
         p.ParseCLI(argc, argv);
@@ -34,8 +47,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    Sniffer sniffer;
-    sniffer.start(args::get(interface), true, true, args::get(filter));
+    sniffer = new Sniffer();
+    sniffer->start(args::get(interface), true, true, args::get(filter));
 
     return 0;
 }
